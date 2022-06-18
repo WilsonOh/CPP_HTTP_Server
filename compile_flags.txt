@@ -1,0 +1,9 @@
+-g
+-std=c++17
+-lfmt
+-Wall
+-Wpedantic
+-lssl
+-lcrypto
+-fsanitize=bounds
+-fsanitize=address
