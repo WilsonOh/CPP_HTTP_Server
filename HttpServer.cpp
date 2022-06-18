@@ -59,7 +59,6 @@ int main(void) {
     while ((read(connfd, buf, 1) > 0)) {
       msg.append(buf);
       if (strutil::contains(msg, "\r\n\r\n")) {
-        std::cout << "break\n";
         break;
       }
     }
