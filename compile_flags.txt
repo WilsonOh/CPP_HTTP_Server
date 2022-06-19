@@ -3,7 +3,5 @@
 -lfmt
 -Wall
 -Wpedantic
--lssl
--lcrypto
 -fsanitize=bounds
 -fsanitize=address
