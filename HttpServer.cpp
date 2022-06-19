@@ -120,8 +120,10 @@ static void handle_request_body(int connfd, HttpRequest &req) {
 }
 
 void HttpServer::listenAndRun(const std::uint16_t &port) {
-  signal(SIGINT, HttpServer::intHandler);
-  signal(SIGABRT, HttpServer::intHandler);
+  struct sigaction sigAction;
+  sigAction.sa_flags = 0;
+  sigAction.sa_handler = intHandler;
+  sigaction(SIGINT, &sigAction, NULL);
   _listenfd = socket(AF_INET, SOCK_STREAM, 0);
   int flags = fcntl(_listenfd, F_GETFL); // Get the socket's current flags
   fcntl(_listenfd, F_SETFL,
