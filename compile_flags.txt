@@ -5,3 +5,4 @@
 -Wpedantic
 -fsanitize=bounds
 -fsanitize=address
+-DVERBOSE

@@ -22,6 +22,7 @@ public:
   void set_header(const std::string &key, const std::string &value);
   void set_status_code(const int &status_code);
   void static_file(const std::string &path);
+  void image(const std::string &path);
 };
 
 struct HttpRequest {

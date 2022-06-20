@@ -20,6 +20,14 @@
 #include <string>
 #include <vector>
 
+#define RETRY_COUNT 5
+
+#ifdef VERBOSE
+static bool verbose = true;
+#else
+static bool verbose = false;
+#endif
+
 //--------------------HttpResponse-------------------------------
 
 HttpRequest::HttpRequest(std::string text) {
@@ -29,8 +37,7 @@ HttpRequest::HttpRequest(std::string text) {
   std::vector<std::string> headers = split(header_string, "\r\n");
   auto it = headers.begin();
   std::string status_line(*it);
-  std::vector<std::string> status_line_components =
-      split(status_line, " ");
+  std::vector<std::string> status_line_components = split(status_line, " ");
   _method = status_line_components[0];
   _route = status_line_components[1];
   it++;
@@ -61,6 +68,13 @@ void HttpResponse::static_file(const std::string &path) {
   _body = strutil::slurp(path);
 }
 
+void HttpResponse::image(const std::string &path) {
+  std::ifstream fin(path, std::ios::in | std::ios::binary);
+  std::ostringstream oss;
+  oss << fin.rdbuf();
+  _body = oss.str();
+}
+
 std::string HttpResponse::get_full_response() {
   std::string res(fmt::format("HTTP/1.1 {} {}\r\n", _status_code,
                               get_status_msg(_status_code)));
@@ -75,7 +89,9 @@ std::string HttpResponse::get_full_response() {
   return res;
 }
 
-void HttpResponse::set_status_code(const int &status_code) { _status_code = status_code; }
+void HttpResponse::set_status_code(const int &status_code) {
+  _status_code = status_code;
+}
 
 void HttpResponse::set_header(const std::string &key,
                               const std::string &value) {
@@ -110,13 +126,14 @@ static std::unique_ptr<sockaddr_in> get_sa(uint16_t port) {
 }
 
 static void handle_request_body(int connfd, HttpRequest &req) {
-  if (req._headers.find("content-length") == req._headers.end()) return;
+  if (req._headers.find("content-length") == req._headers.end())
+    return;
   unsigned long size_to_read = std::stoul(req._headers.at("content-length"));
   char *buf = new char[size_to_read + 1];
   memset(buf, 0, size_to_read + 1);
   read(connfd, buf, size_to_read);
   req._body.append(buf);
-  delete [] buf;
+  delete[] buf;
 }
 
 void HttpServer::listenAndRun(const std::uint16_t &port) {
@@ -132,11 +149,27 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
     throw std::runtime_error("Failed to create socket");
   }
   auto sa = get_sa(port);
-  if (bind(_listenfd, reinterpret_cast<sockaddr *>(sa.get()),
-           sizeof(sockaddr)) == -1) {
-    std::cout << errno << '\n';
+
+  int bind_retry_count = 0;
+  int bind_status;
+  do {
+    bind_status = bind(_listenfd, reinterpret_cast<sockaddr *>(sa.get()),
+                       sizeof(sockaddr));
+    if (bind_status == -1) {
+      std::cout << fmt::format(
+          "Binding to port {} failed. Retry count: {}/{}\n", port,
+          ++bind_retry_count, RETRY_COUNT);
+      std::cout << fmt::format("Waiting {}s before retrying...\n",
+                               bind_retry_count);
+      sleep(1 * bind_retry_count);
+    }
+  } while (bind_status == -1 && bind_retry_count < RETRY_COUNT);
+
+  if (bind_status == -1) {
+    std::cout << std::strerror(errno) << '\n';
     throw std::runtime_error("Unable to bind");
   }
+
   if (listen(_listenfd, 10) == -1) {
     throw std::runtime_error("unable to listen");
   }
@@ -144,15 +177,28 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
   std::cout << "Now listening at port: " << port << '\n';
 
   while (_run) {
+    // create a sockaddr struct to store client information
+    sockaddr_in client_sa = {0}; // zero out the struct
+    socklen_t client_sa_len =
+        sizeof(sockaddr); // must initialize value to size of struct
+
     // accept is now non-blocking as _listenfd is set to be non-blocking
-    _connfd = accept(_listenfd, nullptr, nullptr);
+    _connfd = accept(_listenfd, reinterpret_cast<sockaddr *>(&client_sa),
+                     &client_sa_len);
     if (_connfd == -1) {
       if (errno == EWOULDBLOCK) {
-        sleep(1);
+        // usleep(500);
       } else {
         throw std::runtime_error("error accepting connection");
       }
+    } else if (verbose) {
+      char client_address[INET_ADDRSTRLEN] = {0};
+      inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
+                INET_ADDRSTRLEN);
+      std::cout << fmt::format("Recieved connection from ip address: {}\n",
+                               client_address);
     }
+
     char buf[2] = {0};
     std::string request_string;
     // NOTE: This only handles the headers,
@@ -167,18 +213,32 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
       continue;
     HttpRequest request(request_string);
     handle_request_body(_connfd, request);
+
+    if (verbose) {
+      std::cout << fmt::format("Recieved request for route: {}\n",
+                               request._route);
+    }
+
     if (_routes.find(request._route) != _routes.end()) {
+      if (verbose) {
+        std::cout << "Route matched!\n";
+      }
       auto func = _routes.at(request._route);
       HttpResponse res;
       func(request, res);
       std::string reply = res.get_full_response();
+      std::cout << reply << '\n';
       write(_connfd, reply.c_str(), reply.length());
       close(_connfd);
     } else {
+      if (verbose) {
+        std::cout << "Route doesn't match any of the mappings\n";
+      }
       HttpResponse not_found_res;
       not_found_res.set_status_code(404);
       not_found_res.text("Wilson's Server: page request is not found");
       std::string reply = not_found_res.get_full_response();
+      std::cout << reply << '\n';
       write(_connfd, reply.c_str(), reply.length());
       close(_connfd);
     }
