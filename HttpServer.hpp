@@ -25,7 +25,8 @@ public:
   void static_file(const std::string &path);
   void image(const std::string &path);
   void image(const std::string &path, const std::string &type);
-  void html(const std::string &html_string);
+  void html(const std::string &path);
+  void html_string(const std::string &html_string);
 };
 
 struct HttpRequest {
@@ -65,18 +66,22 @@ public:
 
   HttpServer setNumListeners(int num_listeners);
 
-  HttpServer set404Page(const HttpResponse res);
+  HttpServer set404Page(const std::string &path);
+
+  HttpServer set404Text(const std::string &message);
+
+  HttpServer set404Response(HttpResponse res);
 
   HttpServer static_directory_path(const std::string &path, const std::string &static_root);
 
 private:
   static void intHandler(int);
 
-  void handleNonStatic(const HttpRequest &request) const;
-
-  void handleStatic(const HttpRequest &request) const;
+  void handle_requests(const HttpRequest &request) const;
 
   void staticSetup();
+
+  void _get(const std::string &route, routeFunc);
 };
 
 #endif // !HTTPSERVER_HPP

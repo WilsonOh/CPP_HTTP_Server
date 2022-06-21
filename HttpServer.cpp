@@ -71,7 +71,10 @@ static std::string get_status_msg(const uint8_t &status_code) {
 
 HttpResponse::HttpResponse() { _status_code = 200; }
 
-void HttpResponse::text(const std::string &msg) { _body = msg; }
+void HttpResponse::text(const std::string &msg) {
+  this->set_header("Content-Type", "text/plain");
+  _body = msg;
+}
 
 void HttpResponse::static_file(const std::string &path) {
   _body = strutil::slurp(path);
@@ -108,9 +111,14 @@ void HttpResponse::image(const std::string &path, const std::string &type) {
   _body = oss.str();
 }
 
-void HttpResponse::html(const std::string &html_string) {
+void HttpResponse::html_string(const std::string &html_string) {
   this->set_header("Content-Type", "text/html");
   _body = html_string;
+}
+
+void HttpResponse::html(const std::string &path) {
+  this->set_header("Content-Type", "text/html");
+  this->static_file(path);
 }
 
 std::string HttpResponse::get_headers() const {
@@ -156,6 +164,13 @@ HttpServer::HttpServer() {
 }
 
 void HttpServer::get(const std::string &route, routeFunc func) {
+  if (!_static_directory_path.empty()) {
+    throw std::invalid_argument("Cannot define routes while in static directory serving mode");
+  }
+  _routes.insert_or_assign(route, func);
+}
+
+void HttpServer::_get(const std::string &route, routeFunc func) {
   _routes.insert_or_assign(route, func);
 }
 
@@ -165,7 +180,25 @@ HttpServer HttpServer::setNumListeners(int num_listeners) {
   return tmp;
 }
 
-HttpServer HttpServer::set404Page(const HttpResponse res) {
+HttpServer HttpServer::set404Page(const std::string &path) {
+  HttpServer tmp = *this;
+  HttpResponse res;
+  res.html(path);
+  tmp._notFoundPage = res;
+  tmp._notFoundPage.set_status_code(404);
+  return tmp;
+}
+
+HttpServer HttpServer::set404Text(const std::string &message) {
+  HttpServer tmp = *this;
+  HttpResponse res;
+  res.text(message);
+  tmp._notFoundPage = res;
+  tmp._notFoundPage.set_status_code(404);
+  return tmp;
+}
+
+HttpServer HttpServer::set404Response(HttpResponse res) {
   HttpServer tmp = *this;
   tmp._notFoundPage = res;
   tmp._notFoundPage.set_status_code(404);
@@ -176,6 +209,9 @@ HttpServer HttpServer::static_directory_path(const std::string &path,
                                              const std::string &static_root) {
   HttpServer tmp = *this;
   tmp._static_directory_path = path;
+  if (tmp._static_directory_path.back() != '/') {
+    tmp._static_directory_path += "/";
+  }
   tmp._static_root = static_root;
   return tmp;
 }
@@ -192,7 +228,7 @@ static void handle_request_body(int connfd, HttpRequest &req) {
   unsigned long size_to_read;
   try {
     size_to_read = std::stoul(req.headers().at("content-length"));
-  } catch (std::out_of_range) {
+  } catch (std::out_of_range const &) {
     return;
   }
   char *buf = new char[size_to_read + 1];
@@ -203,7 +239,7 @@ static void handle_request_body(int connfd, HttpRequest &req) {
   delete[] buf;
 }
 
-void HttpServer::handleNonStatic(const HttpRequest &request) const {
+void HttpServer::handle_requests(const HttpRequest &request) const {
   if (_routes.find(request.route()) != _routes.end()) {
     if (verbose) {
       std::cout << fmt::format("Route {} matched!", request.route())
@@ -231,7 +267,7 @@ void HttpServer::staticSetup() {
   if (_static_directory_path.empty()) {
     throw std::invalid_argument("No static file directory setup.");
   }
-  this->get("/", [&](const HttpRequest &req, HttpResponse &res) {
+  this->_get("/", [=](const HttpRequest &req, HttpResponse &res) {
     res.set_header("Content-Type", "text/html");
     res.static_file(_static_directory_path + _static_root);
   });
@@ -239,8 +275,8 @@ void HttpServer::staticSetup() {
        std::filesystem::directory_iterator(_static_directory_path)) {
     std::string file_name(entry.path().filename());
     std::string extension(entry.path().extension());
-    std::string content_type;
-    this->get("/" + file_name, [&](const HttpRequest &req, HttpResponse &res) {
+    this->_get("/" + file_name, [=](const HttpRequest &req, HttpResponse &res) {
+      std::string content_type;
       if (extension == ".css") {
         content_type = "text/css";
       } else if (extension == ".js") {
@@ -250,37 +286,12 @@ void HttpServer::staticSetup() {
       } else if (extension == ".ico") {
         res.image(entry.path());
       } else {
-        /* throw std::runtime_error(fmt::format(
+        throw std::runtime_error(fmt::format(
             "staticSetup: static file extension {} not supported", extension));
-         */
       }
       res.set_header("Content-Type", content_type);
       res.static_file(entry.path());
     });
-  }
-}
-
-void HttpServer::handleStatic(const HttpRequest &request) const {
-  if (_routes.find(request.route()) != _routes.end()) {
-    if (verbose) {
-      std::cout << fmt::format("Route {} matched!", request.route())
-                << std::endl;
-    }
-    auto func = _routes.at(request.route());
-    HttpResponse res;
-    func(request, res);
-    std::string reply = res.get_full_response();
-    write(_connfd, reply.c_str(), reply.length());
-    close(_connfd);
-  } else {
-    if (verbose) {
-      std::cout << fmt::format("Route {} doesn't match any mappings.",
-                               request.route())
-                << std::endl;
-    }
-    std::string reply = _notFoundPage.get_full_response();
-    write(_connfd, reply.c_str(), reply.length());
-    close(_connfd);
   }
 }
 
@@ -356,8 +367,6 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
 
     char buf[2] = {0};
     std::string request_string;
-    // NOTE: This only handles the headers,
-    // body handling is not yet implemented.
     while (_run && (read(_connfd, buf, 1) > 0)) {
       request_string.append(buf);
       if (strutil::contains(request_string, "\r\n\r\n")) {
@@ -369,15 +378,12 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
     HttpRequest request(request_string);
     handle_request_body(_connfd, request);
 
-    if (verbose) {
-      std::cout << fmt::format("Recieved request for route: {}",
-                               request.route())
-                << std::endl;
-    }
+    std::cout << fmt::format("Recieved request for route: {}", request.route())
+              << std::endl;
     if (!_static_directory_path.empty()) {
       staticSetup();
     }
-    handleNonStatic(request);
+    handle_requests(request);
   }
   close(_connfd);
   close(_listenfd);

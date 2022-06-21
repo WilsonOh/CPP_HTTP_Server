@@ -1,4 +1,3 @@
 *.dSYM/
 HttpServer
-index.html
 main*
