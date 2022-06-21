@@ -284,7 +284,8 @@ void HttpServer::staticSetup() {
       } else if (extension == ".html") {
         content_type = "text/html";
       } else if (extension == ".ico") {
-        res.image(entry.path());
+        res.image(entry.path(), "x-icon");
+        return;
       } else {
         throw std::runtime_error(fmt::format(
             "staticSetup: static file extension {} not supported", extension));
