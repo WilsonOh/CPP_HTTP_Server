@@ -81,6 +81,7 @@ inline std::string slurp(const std::string &path) {
     throw std::runtime_error("file not found: " + path);
   }
   buf << input.rdbuf();
+  input.close();
   return buf.str();
 }
 

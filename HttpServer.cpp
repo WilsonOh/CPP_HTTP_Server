@@ -8,8 +8,10 @@
 #include <memory>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <stdexcept>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -93,6 +95,7 @@ void HttpResponse::image(const std::string &path) {
   std::ostringstream oss;
   oss << fin.rdbuf();
   _body = oss.str();
+  fin.close();
 }
 
 /**
@@ -109,6 +112,7 @@ void HttpResponse::image(const std::string &path, const std::string &type) {
   std::ostringstream oss;
   oss << fin.rdbuf();
   _body = oss.str();
+  fin.close();
 }
 
 void HttpResponse::html_string(const std::string &html_string) {
@@ -322,13 +326,13 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
   sigAction.sa_handler = intHandler;
   sigaction(SIGINT, &sigAction, NULL);
   _listenfd = socket(AF_INET, SOCK_STREAM, 0);
-  int flags = fcntl(_listenfd, F_GETFL); // Get the socket's current flags
+  int flags = fcntl(_listenfd, F_GETFL, 0); // Get the socket's current flags
   fcntl(_listenfd, F_SETFL,
         flags | O_NONBLOCK); // Set the socket to be non-blocking
   // Set the socket to be reusable instantly; Violates TCP/IP protocol?
-  /* int iSetOption = 1;
+  int iSetOption = 1;
   setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&iSetOption,
-             sizeof(iSetOption)); */
+             sizeof(iSetOption));
   if (_listenfd == -1) {
     throw std::runtime_error("Failed to create socket");
   }
@@ -373,7 +377,7 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
                      &client_sa_len);
     if (_connfd == -1) {
       if (errno == EWOULDBLOCK) {
-        usleep(500);
+        continue;
       } else {
         close(_connfd);
         close(_listenfd);
@@ -391,14 +395,32 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
 
     char buf[2] = {0};
     std::string request_string;
-    while (_run && (read(_connfd, buf, 1) > 0)) {
-      request_string.append(buf);
-      if (strutil::contains(request_string, "\r\n\r\n")) {
-        break;
+    fd_set fds;
+    timeval tv;
+    tv.tv_sec = 15;
+    tv.tv_usec = 0;
+    FD_ZERO(&fds);
+    FD_SET(_connfd, &fds);
+
+    int ret = select(_connfd + 1, &fds, NULL, NULL, &tv);
+
+    if (ret == 0) {
+      std::cout << "timed out\n";
+      continue;
+    } else if (ret == -1) {
+      throw std::runtime_error("select error");
+    } else if (FD_ISSET(_connfd, &fds)) {
+      while ((read(_connfd, buf, 1) > 0)) {
+        request_string.append(buf);
+        if (strutil::contains(request_string, "\r\n\r\n")) {
+          break;
+        }
       }
     }
-    if (request_string.empty())
+    if (request_string.empty()) {
+      std::cout << "continued\n";
       continue;
+    }
     HttpRequest request(request_string);
     handle_request_body(_connfd, request);
 
