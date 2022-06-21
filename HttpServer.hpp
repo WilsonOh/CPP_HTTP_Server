@@ -52,7 +52,6 @@ class HttpServer {
   int _connfd;
   int _numListeners;
   std::string _static_directory_path;
-  std::string _static_root;
   HttpResponse _notFoundPage;
   static volatile sig_atomic_t _run;
   std::map<std::string, routeFunc> _routes;
@@ -72,7 +71,7 @@ public:
 
   HttpServer set404Response(HttpResponse res);
 
-  HttpServer static_directory_path(const std::string &path, const std::string &static_root);
+  HttpServer static_directory_path(const std::string &path);
 
 private:
   static void intHandler(int);

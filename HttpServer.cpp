@@ -165,7 +165,8 @@ HttpServer::HttpServer() {
 
 void HttpServer::get(const std::string &route, routeFunc func) {
   if (!_static_directory_path.empty()) {
-    throw std::invalid_argument("Cannot define routes while in static directory serving mode");
+    throw std::invalid_argument(
+        "Cannot define routes while in static directory serving mode");
   }
   _routes.insert_or_assign(route, func);
 }
@@ -205,14 +206,12 @@ HttpServer HttpServer::set404Response(HttpResponse res) {
   return tmp;
 }
 
-HttpServer HttpServer::static_directory_path(const std::string &path,
-                                             const std::string &static_root) {
+HttpServer HttpServer::static_directory_path(const std::string &path) {
   HttpServer tmp = *this;
   tmp._static_directory_path = path;
   if (tmp._static_directory_path.back() != '/') {
     tmp._static_directory_path += "/";
   }
-  tmp._static_root = static_root;
   return tmp;
 }
 
@@ -264,17 +263,28 @@ void HttpServer::handle_requests(const HttpRequest &request) const {
 }
 
 void HttpServer::staticSetup() {
-  if (_static_directory_path.empty()) {
-    throw std::invalid_argument("No static file directory setup.");
+  auto root = std::filesystem::path(_static_directory_path);
+  if (!is_directory(root)) {
+    throw std::invalid_argument(
+        "static directory path has to point to a directory");
+  }
+  if (root.empty()) {
+    throw std::invalid_argument("given directory is empty");
+  }
+  if (!std::ifstream(root / "index.html").good()) {
+    throw std::invalid_argument(
+        "index.html does not exist in the root directory of the static folder");
   }
   this->_get("/", [=](const HttpRequest &req, HttpResponse &res) {
-    res.set_header("Content-Type", "text/html");
-    res.static_file(_static_directory_path + _static_root);
+    res.html(root / "index.html");
   });
   for (const auto &entry :
-       std::filesystem::directory_iterator(_static_directory_path)) {
-    std::string file_name(entry.path().filename());
+       std::filesystem::recursive_directory_iterator(_static_directory_path)) {
     std::string extension(entry.path().extension());
+    if (!is_regular_file(entry.path())) {
+      continue;
+    }
+    std::string file_name = std::filesystem::relative(entry.path(), root);
     this->_get("/" + file_name, [=](const HttpRequest &req, HttpResponse &res) {
       std::string content_type;
       if (extension == ".css") {
@@ -285,6 +295,16 @@ void HttpServer::staticSetup() {
         content_type = "text/html";
       } else if (extension == ".ico") {
         res.image(entry.path(), "x-icon");
+        return;
+      } else if (extension == ".svg") {
+        res.image(entry.path(), "svg+xml");
+        return;
+      } else if (extension == ".txt") {
+        content_type = "text/plain";
+      } else if (extension == ".json" || extension == ".map") {
+        content_type = "application/json";
+      } else if (extension == ".png") {
+        res.image(entry.path());
         return;
       } else {
         throw std::runtime_error(fmt::format(
@@ -306,9 +326,9 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
   fcntl(_listenfd, F_SETFL,
         flags | O_NONBLOCK); // Set the socket to be non-blocking
   // Set the socket to be reusable instantly; Violates TCP/IP protocol?
-  int iSetOption = 1;
+  /* int iSetOption = 1;
   setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&iSetOption,
-             sizeof(iSetOption));
+             sizeof(iSetOption)); */
   if (_listenfd == -1) {
     throw std::runtime_error("Failed to create socket");
   }
@@ -353,8 +373,11 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
                      &client_sa_len);
     if (_connfd == -1) {
       if (errno == EWOULDBLOCK) {
-        sleep(1);
+        usleep(500);
       } else {
+        close(_connfd);
+        close(_listenfd);
+        std::cout << "\nsockets closed. Exiting..." << std::endl;
         throw std::runtime_error("error accepting connection");
       }
     } else if (verbose) {
