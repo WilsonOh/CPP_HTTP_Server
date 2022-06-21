@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -75,6 +77,9 @@ inline bool contains(const std::string haystack, const std::string needle) {
 inline std::string slurp(const std::string &path) {
   std::ostringstream buf;
   std::ifstream input(path.c_str());
+  if (!input) {
+    throw std::runtime_error("file not found: " + path);
+  }
   buf << input.rdbuf();
   return buf.str();
 }

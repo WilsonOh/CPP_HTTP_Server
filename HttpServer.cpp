@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fmt/core.h>
+#include <fmt/format.h>
 #include <memory>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -17,6 +18,7 @@
 #include "get_ip.hpp"
 #include "strutil.hpp"
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -47,6 +49,13 @@ HttpRequest::HttpRequest(std::string text) {
   }
 }
 
+std::string HttpRequest::body() const { return _body; }
+std::string HttpRequest::method() const { return _method; }
+std::string HttpRequest::route() const { return _route; }
+std::map<std::string, std::string> HttpRequest::headers() const {
+  return _headers;
+}
+
 //---------------------------------------------------------------
 
 //--------------------HttpResponse-------------------------------
@@ -68,14 +77,43 @@ void HttpResponse::static_file(const std::string &path) {
   _body = strutil::slurp(path);
 }
 
+/**
+ * Send an image as a response
+ * Sets the content-type to image/png by default
+ *
+ * @param path the path to the image
+ *
+ */
 void HttpResponse::image(const std::string &path) {
+  this->set_header("Content-Type", "image/png");
   std::ifstream fin(path, std::ios::in | std::ios::binary);
   std::ostringstream oss;
   oss << fin.rdbuf();
   _body = oss.str();
 }
 
-std::string HttpResponse::get_full_response() {
+/**
+ * Send an image as a response
+ * Sets the content-type to image/png by default
+ *
+ * @param path the path to the image
+ * @param type the type of image (png/x-icon/jpg etc.)
+ *
+ */
+void HttpResponse::image(const std::string &path, const std::string &type) {
+  this->set_header("Content-Type", "image/" + type);
+  std::ifstream fin(path, std::ios::in | std::ios::binary);
+  std::ostringstream oss;
+  oss << fin.rdbuf();
+  _body = oss.str();
+}
+
+void HttpResponse::html(const std::string &html_string) {
+  this->set_header("Content-Type", "text/html");
+  _body = html_string;
+}
+
+std::string HttpResponse::get_headers() const {
   std::string res(fmt::format("HTTP/1.1 {} {}\r\n", _status_code,
                               get_status_msg(_status_code)));
   for (const auto &[k, v] : _headers) {
@@ -85,8 +123,11 @@ std::string HttpResponse::get_full_response() {
     res.append(fmt::format("Content-Length: {}", _body.length()));
   }
   res.append("\r\n\r\n");
-  res.append(_body);
   return res;
+}
+
+std::string HttpResponse::get_full_response() const {
+  return this->get_headers() + _body;
 }
 
 void HttpResponse::set_status_code(const int &status_code) {
@@ -105,16 +146,38 @@ volatile sig_atomic_t HttpServer::_run;
 
 void HttpServer::intHandler(int) { _run = 0; }
 
-HttpServer::HttpServer() { _run = 1; }
-
-HttpServer::~HttpServer() {
-  close(_connfd);
-  close(_listenfd);
-  std::cout << "\nsockets closed. Exiting..." << std::endl;
+HttpServer::HttpServer() {
+  _run = 1;
+  _numListeners = 3;
+  HttpResponse not_found_res;
+  not_found_res.set_status_code(404);
+  not_found_res.text("Wilson's Server: page request is not found");
+  _notFoundPage = not_found_res;
 }
 
 void HttpServer::get(const std::string &route, routeFunc func) {
   _routes.insert_or_assign(route, func);
+}
+
+HttpServer HttpServer::setNumListeners(int num_listeners) {
+  HttpServer tmp = *this;
+  tmp._numListeners = num_listeners;
+  return tmp;
+}
+
+HttpServer HttpServer::set404Page(const HttpResponse res) {
+  HttpServer tmp = *this;
+  tmp._notFoundPage = res;
+  tmp._notFoundPage.set_status_code(404);
+  return tmp;
+}
+
+HttpServer HttpServer::static_directory_path(const std::string &path,
+                                             const std::string &static_root) {
+  HttpServer tmp = *this;
+  tmp._static_directory_path = path;
+  tmp._static_root = static_root;
+  return tmp;
 }
 
 static std::unique_ptr<sockaddr_in> get_sa(uint16_t port) {
@@ -126,14 +189,99 @@ static std::unique_ptr<sockaddr_in> get_sa(uint16_t port) {
 }
 
 static void handle_request_body(int connfd, HttpRequest &req) {
-  if (req._headers.find("content-length") == req._headers.end())
+  unsigned long size_to_read;
+  try {
+    size_to_read = std::stoul(req.headers().at("content-length"));
+  } catch (std::out_of_range) {
     return;
-  unsigned long size_to_read = std::stoul(req._headers.at("content-length"));
+  }
   char *buf = new char[size_to_read + 1];
   memset(buf, 0, size_to_read + 1);
   read(connfd, buf, size_to_read);
-  req._body.append(buf);
+  req.body().append(buf);
+  std::cout << "recieved: " << buf << '\n';
   delete[] buf;
+}
+
+void HttpServer::handleNonStatic(const HttpRequest &request) const {
+  if (_routes.find(request.route()) != _routes.end()) {
+    if (verbose) {
+      std::cout << fmt::format("Route {} matched!", request.route())
+                << std::endl;
+    }
+    auto func = _routes.at(request.route());
+    HttpResponse res;
+    func(request, res);
+    std::string reply = res.get_full_response();
+    write(_connfd, reply.c_str(), reply.length());
+    close(_connfd);
+  } else {
+    if (verbose) {
+      std::cout << fmt::format("Route {} doesn't match any mappings.",
+                               request.route())
+                << std::endl;
+    }
+    std::string reply = _notFoundPage.get_full_response();
+    write(_connfd, reply.c_str(), reply.length());
+    close(_connfd);
+  }
+}
+
+void HttpServer::staticSetup() {
+  if (_static_directory_path.empty()) {
+    throw std::invalid_argument("No static file directory setup.");
+  }
+  this->get("/", [&](const HttpRequest &req, HttpResponse &res) {
+    res.set_header("Content-Type", "text/html");
+    res.static_file(_static_directory_path + _static_root);
+  });
+  for (const auto &entry :
+       std::filesystem::directory_iterator(_static_directory_path)) {
+    std::string file_name(entry.path().filename());
+    std::string extension(entry.path().extension());
+    std::string content_type;
+    this->get("/" + file_name, [&](const HttpRequest &req, HttpResponse &res) {
+      if (extension == ".css") {
+        content_type = "text/css";
+      } else if (extension == ".js") {
+        content_type = "text/javascript";
+      } else if (extension == ".html") {
+        content_type = "text/html";
+      } else if (extension == ".ico") {
+        res.image(entry.path());
+      } else {
+        /* throw std::runtime_error(fmt::format(
+            "staticSetup: static file extension {} not supported", extension));
+         */
+      }
+      res.set_header("Content-Type", content_type);
+      res.static_file(entry.path());
+    });
+  }
+}
+
+void HttpServer::handleStatic(const HttpRequest &request) const {
+  if (_routes.find(request.route()) != _routes.end()) {
+    if (verbose) {
+      std::cout << fmt::format("Route {} matched!", request.route())
+                << std::endl;
+    }
+    auto func = _routes.at(request.route());
+    HttpResponse res;
+    func(request, res);
+    std::string reply = res.get_full_response();
+    write(_connfd, reply.c_str(), reply.length());
+    close(_connfd);
+  } else {
+    if (verbose) {
+      std::cout << fmt::format("Route {} doesn't match any mappings.",
+                               request.route())
+                << std::endl;
+    }
+    std::string reply = _notFoundPage.get_full_response();
+    write(_connfd, reply.c_str(), reply.length());
+    close(_connfd);
+  }
 }
 
 void HttpServer::listenAndRun(const std::uint16_t &port) {
@@ -145,6 +293,10 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
   int flags = fcntl(_listenfd, F_GETFL); // Get the socket's current flags
   fcntl(_listenfd, F_SETFL,
         flags | O_NONBLOCK); // Set the socket to be non-blocking
+  // Set the socket to be reusable instantly; Violates TCP/IP protocol?
+  int iSetOption = 1;
+  setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&iSetOption,
+             sizeof(iSetOption));
   if (_listenfd == -1) {
     throw std::runtime_error("Failed to create socket");
   }
@@ -170,11 +322,13 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
     throw std::runtime_error("Unable to bind");
   }
 
-  if (listen(_listenfd, 10) == -1) {
+  if (listen(_listenfd, _numListeners) == -1) {
     throw std::runtime_error("unable to listen");
   }
 
-  std::cout << "Now listening at port: " << port << '\n';
+  std::string msg = fmt::format("Now listening at port: {} with {} listeners\n",
+                                port, _numListeners);
+  std::cout << msg;
 
   while (_run) {
     // create a sockaddr struct to store client information
@@ -187,7 +341,7 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
                      &client_sa_len);
     if (_connfd == -1) {
       if (errno == EWOULDBLOCK) {
-        // usleep(500);
+        sleep(1);
       } else {
         throw std::runtime_error("error accepting connection");
       }
@@ -195,8 +349,9 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
       char client_address[INET_ADDRSTRLEN] = {0};
       inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
                 INET_ADDRSTRLEN);
-      std::cout << fmt::format("Recieved connection from ip address: {}\n",
-                               client_address);
+      std::cout << fmt::format("Recieved connection from ip address: {}",
+                               client_address)
+                << std::endl;
     }
 
     char buf[2] = {0};
@@ -215,32 +370,16 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
     handle_request_body(_connfd, request);
 
     if (verbose) {
-      std::cout << fmt::format("Recieved request for route: {}\n",
-                               request._route);
+      std::cout << fmt::format("Recieved request for route: {}",
+                               request.route())
+                << std::endl;
     }
-
-    if (_routes.find(request._route) != _routes.end()) {
-      if (verbose) {
-        std::cout << "Route matched!\n";
-      }
-      auto func = _routes.at(request._route);
-      HttpResponse res;
-      func(request, res);
-      std::string reply = res.get_full_response();
-      std::cout << reply << '\n';
-      write(_connfd, reply.c_str(), reply.length());
-      close(_connfd);
-    } else {
-      if (verbose) {
-        std::cout << "Route doesn't match any of the mappings\n";
-      }
-      HttpResponse not_found_res;
-      not_found_res.set_status_code(404);
-      not_found_res.text("Wilson's Server: page request is not found");
-      std::string reply = not_found_res.get_full_response();
-      std::cout << reply << '\n';
-      write(_connfd, reply.c_str(), reply.length());
-      close(_connfd);
+    if (!_static_directory_path.empty()) {
+      staticSetup();
     }
+    handleNonStatic(request);
   }
+  close(_connfd);
+  close(_listenfd);
+  std::cout << "\nsockets closed. Exiting..." << std::endl;
 }
