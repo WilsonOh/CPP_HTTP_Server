@@ -321,6 +321,9 @@ void HttpServer::staticSetup() {
 }
 
 void HttpServer::listenAndRun(const std::uint16_t &port) {
+  if (!_static_directory_path.empty()) {
+    staticSetup();
+  }
   struct sigaction sigAction;
   sigAction.sa_flags = 0;
   sigAction.sa_handler = intHandler;
@@ -430,9 +433,6 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
 
     std::cout << fmt::format("Recieved request for route: {}", request.route())
               << std::endl;
-    if (!_static_directory_path.empty()) {
-      staticSetup();
-    }
     handle_requests(request);
   }
   close(_connfd);

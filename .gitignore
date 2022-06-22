@@ -1,3 +1,4 @@
 *.dSYM/
 HttpServer
 main*
+build*
