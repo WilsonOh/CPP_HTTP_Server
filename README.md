@@ -7,6 +7,13 @@
 * Easily serve static directories (examples below)
 * Easy to include in project
 
+## This library will not work on windows!
+
+## Dependencies
+* [fmt library](https://fmt.dev/latest/index.html)
+* C++ 17
+* Unix-based OS (only tested on macOS and Linux)
+
 ## Usage
 First off, a simple "hello world" example.<br>
 To use the library, clone the repo into a directory.<br>
@@ -16,6 +23,7 @@ git clone https://github.com/WilsonOh/CPP_HTTP_Server.git
 ```
 Include the library by providing the path to the `HttpServer.hpp` file as seen below.
 ```cpp
+// main.cpp
 #include "CPP_HTTP_Server/HttpServer.hpp"
 
 int main(void) {
@@ -25,6 +33,10 @@ int main(void) {
   });
   svr.run();
 }
+```
+To compile:
+```console
+g++ main.cpp CPP_HTTP_Server/HttpServer.cpp -lfmt -o main
 ```
 ### Explanation:
 We first create an instance of `HttpServer` which initializes its fields to the default values.
