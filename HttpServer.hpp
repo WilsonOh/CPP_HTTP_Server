@@ -9,6 +9,9 @@
 #include <map>
 #include <string>
 
+#define RETRY_COUNT 5
+#define DEFAULT_PORT 3000
+
 struct HttpResponse {
 private:
   std::map<std::string, std::string> _headers;
@@ -27,9 +30,14 @@ public:
   void image(const std::string &path, const std::string &type);
   void html(const std::string &path);
   void html_string(const std::string &html_string);
+  void json(const std::string &json_string);
+  void downloadable(const std::string &path,
+                    const std::string &content_type = "text/html");
 };
 
 struct HttpRequest {
+  friend void handle_request_body(int connfd, HttpRequest &req);
+
 private:
   std::map<std::string, std::string> _headers;
   std::string _body;
@@ -49,19 +57,21 @@ class HttpServer {
   using routeFunc = std::function<void(const HttpRequest &, HttpResponse &)>;
 
   int _listenfd;
-  int _connfd;
   int _numListeners;
   std::string _static_directory_path;
   HttpResponse _notFoundPage;
   static volatile sig_atomic_t _run;
-  std::map<std::string, routeFunc> _routes;
+  std::map<std::string, std::map<std::string, routeFunc>> _routes;
 
 public:
   HttpServer();
 
-  void listenAndRun(const std::uint16_t &port);
+  void run(const std::uint16_t &port = DEFAULT_PORT);
 
   void get(const std::string &route, routeFunc);
+  void post(const std::string &route, routeFunc);
+  void del(const std::string &route, routeFunc);
+  void put(const std::string &route, routeFunc);
 
   HttpServer setNumListeners(int num_listeners);
 
@@ -76,11 +86,25 @@ public:
 private:
   static void intHandler(int);
 
-  void handle_requests(const HttpRequest &request) const;
+  int accept_connection();
+
+  void setup_interrupts();
+
+  int create_socket();
+
+  void try_listen(const int &port);
+
+  void try_bind(const int &port);
+
+  void handle_reply(const HttpRequest &request, int connfd) const;
+
+  void handle_connections(int connfd);
 
   void staticSetup();
 
   void _get(const std::string &route, routeFunc);
+
+  void _cleanup();
 };
 
 #endif // !HTTPSERVER_HPP

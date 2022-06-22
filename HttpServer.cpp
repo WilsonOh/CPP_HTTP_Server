@@ -14,6 +14,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
 
 #include "HttpServer.hpp"
@@ -23,8 +24,6 @@
 #include <filesystem>
 #include <string>
 #include <vector>
-
-#define RETRY_COUNT 5
 
 #ifdef VERBOSE
 static bool verbose = true;
@@ -125,6 +124,18 @@ void HttpResponse::html(const std::string &path) {
   this->static_file(path);
 }
 
+void HttpResponse::json(const std::string &json_string) {
+  this->set_header("Content-Type", "application/json");
+  _body = json_string;
+}
+
+void HttpResponse::downloadable(const std::string &path, const std::string &content_type) {
+  std::string filename = std::filesystem::path(path).filename();
+  this->set_header("Content-Type", content_type);
+  this->set_header("Content-Disposition", fmt::format(R"(attachment; filename="{}")", filename));
+  this->static_file(path);
+}
+
 std::string HttpResponse::get_headers() const {
   std::string res(fmt::format("HTTP/1.1 {} {}\r\n", _status_code,
                               get_status_msg(_status_code)));
@@ -170,13 +181,25 @@ HttpServer::HttpServer() {
 void HttpServer::get(const std::string &route, routeFunc func) {
   if (!_static_directory_path.empty()) {
     throw std::invalid_argument(
-        "Cannot define routes while in static directory serving mode");
+        "Cannot define GET routes while in static directory serving mode");
   }
-  _routes.insert_or_assign(route, func);
+  _routes["GET"].insert_or_assign(route, func);
 }
 
 void HttpServer::_get(const std::string &route, routeFunc func) {
-  _routes.insert_or_assign(route, func);
+  _routes["GET"].insert_or_assign(route, func);
+}
+
+void HttpServer::post(const std::string &route, routeFunc func) {
+  _routes["POST"].insert_or_assign(route, func);
+}
+
+void HttpServer::del(const std::string &route, routeFunc func) {
+  _routes["DELETE"].insert_or_assign(route, func);
+}
+
+void HttpServer::put(const std::string &route, routeFunc func) {
+  _routes["PUT"].insert_or_assign(route, func);
 }
 
 HttpServer HttpServer::setNumListeners(int num_listeners) {
@@ -219,15 +242,15 @@ HttpServer HttpServer::static_directory_path(const std::string &path) {
   return tmp;
 }
 
-static std::unique_ptr<sockaddr_in> get_sa(uint16_t port) {
-  auto sa = std::make_unique<struct sockaddr_in>();
-  sa->sin_family = AF_INET;
-  sa->sin_port = htons(port);
-  sa->sin_addr.s_addr = htonl(INADDR_ANY);
+static sockaddr_in get_sa(uint16_t port) {
+  sockaddr_in sa;
+  sa.sin_family = AF_INET;
+  sa.sin_port = htons(port);
+  sa.sin_addr.s_addr = htonl(INADDR_ANY);
   return sa;
 }
 
-static void handle_request_body(int connfd, HttpRequest &req) {
+void handle_request_body(int connfd, HttpRequest &req) {
   unsigned long size_to_read;
   try {
     size_to_read = std::stoul(req.headers().at("content-length"));
@@ -237,33 +260,36 @@ static void handle_request_body(int connfd, HttpRequest &req) {
   char *buf = new char[size_to_read + 1];
   memset(buf, 0, size_to_read + 1);
   read(connfd, buf, size_to_read);
-  req.body().append(buf);
-  std::cout << "recieved: " << buf << '\n';
+  req._body.append(buf);
   delete[] buf;
 }
 
-void HttpServer::handle_requests(const HttpRequest &request) const {
-  if (_routes.find(request.route()) != _routes.end()) {
-    if (verbose) {
-      std::cout << fmt::format("Route {} matched!", request.route())
-                << std::endl;
+void HttpServer::handle_reply(const HttpRequest &request, int connfd) const {
+  if (_routes.find(request.method()) != _routes.end()) {
+    auto route = _routes.at(request.method());
+    if (route.find(request.route()) != route.end()) {
+      if (verbose) {
+        std::cout << fmt::format("Route {} matched for method {}!",
+                                 request.route(), request.method())
+                  << std::endl;
+      }
+      auto func = route.at(request.route());
+      HttpResponse res;
+      func(request, res);
+      std::string reply = res.get_full_response();
+      write(connfd, reply.c_str(), reply.length());
+      close(connfd);
+      return;
     }
-    auto func = _routes.at(request.route());
-    HttpResponse res;
-    func(request, res);
-    std::string reply = res.get_full_response();
-    write(_connfd, reply.c_str(), reply.length());
-    close(_connfd);
-  } else {
-    if (verbose) {
-      std::cout << fmt::format("Route {} doesn't match any mappings.",
-                               request.route())
-                << std::endl;
-    }
-    std::string reply = _notFoundPage.get_full_response();
-    write(_connfd, reply.c_str(), reply.length());
-    close(_connfd);
   }
+  if (verbose) {
+    std::cout << fmt::format("Route {} doesn't match any mappings.",
+                             request.route())
+              << std::endl;
+  }
+  std::string reply = _notFoundPage.get_full_response();
+  write(connfd, reply.c_str(), reply.length());
+  close(connfd);
 }
 
 void HttpServer::staticSetup() {
@@ -311,8 +337,7 @@ void HttpServer::staticSetup() {
         res.image(entry.path());
         return;
       } else {
-        throw std::runtime_error(fmt::format(
-            "staticSetup: static file extension {} not supported", extension));
+        content_type = "text/plain";
       }
       res.set_header("Content-Type", content_type);
       res.static_file(entry.path());
@@ -320,36 +345,86 @@ void HttpServer::staticSetup() {
   }
 }
 
-void HttpServer::listenAndRun(const std::uint16_t &port) {
-  if (!_static_directory_path.empty()) {
-    staticSetup();
-  }
-  struct sigaction sigAction;
-  sigAction.sa_flags = 0;
-  sigAction.sa_handler = intHandler;
-  sigaction(SIGINT, &sigAction, NULL);
-  _listenfd = socket(AF_INET, SOCK_STREAM, 0);
-  int flags = fcntl(_listenfd, F_GETFL, 0); // Get the socket's current flags
-  fcntl(_listenfd, F_SETFL,
-        flags | O_NONBLOCK); // Set the socket to be non-blocking
-  // Set the socket to be reusable instantly; Violates TCP/IP protocol?
-  int iSetOption = 1;
-  setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&iSetOption,
-             sizeof(iSetOption));
-  if (_listenfd == -1) {
-    throw std::runtime_error("Failed to create socket");
-  }
-  auto sa = get_sa(port);
+void HttpServer::handle_connections(int connfd) {
+  char buf[2] = {0};
+  std::string request_string;
+  fd_set fds;
+  timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  FD_ZERO(&fds);
+  FD_SET(connfd, &fds);
 
+  int ret = select(connfd + 1, &fds, NULL, NULL, &tv);
+
+  if (ret == 0) {
+    std::cout << "reading from the client has timed out\n";
+    return;
+  } else if (ret == -1) {
+    _cleanup();
+    throw std::runtime_error(
+        "an error has occured at select (for reading from the client)");
+  } else if (FD_ISSET(connfd, &fds)) {
+    while ((read(connfd, buf, 1) > 0)) {
+      request_string.append(buf);
+      if (strutil::contains(request_string, "\r\n\r\n")) {
+        break;
+      }
+    }
+  }
+  if (request_string.empty()) {
+    std::cout << "Empty Request\n";
+    return;
+  }
+  HttpRequest request(request_string);
+  handle_request_body(connfd, request);
+
+  std::cout << fmt::format("Recieved {} request for route: {}",
+                           request.method(), request.route())
+            << std::endl;
+  handle_reply(request, connfd);
+}
+
+void HttpServer::_cleanup() {
+  close(_listenfd);
+  std::cout << "\nall sockets closed. Exiting now..." << std::endl;
+}
+
+int HttpServer::accept_connection() {
+  // create a sockaddr struct to store client information
+  sockaddr_in client_sa = {0}; // zero out the struct
+  socklen_t client_sa_len =
+      sizeof(sockaddr); // must initialize value to size of struct
+
+  // accept is now non-blocking as _listenfd is set to be non-blocking
+  int connfd = accept(_listenfd, reinterpret_cast<sockaddr *>(&client_sa),
+                      &client_sa_len);
+  if (connfd == -1) {
+    _cleanup();
+    throw std::runtime_error("error accepting connection");
+  }
+  if (verbose) {
+    char client_address[INET_ADDRSTRLEN] = {0};
+    inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
+              INET_ADDRSTRLEN);
+    std::cout << fmt::format("Recieved connection from ip address: {}",
+                             client_address)
+              << std::endl;
+  }
+  return connfd;
+}
+
+void HttpServer::try_bind(const int &port) {
   int bind_retry_count = 0;
   int bind_status;
+  sockaddr_in sa = get_sa(port);
   do {
-    bind_status = bind(_listenfd, reinterpret_cast<sockaddr *>(sa.get()),
-                       sizeof(sockaddr));
+    bind_status = bind(_listenfd, (sockaddr *)&sa, sizeof(sockaddr));
     if (bind_status == -1) {
       std::cout << fmt::format(
           "Binding to port {} failed. Retry count: {}/{}\n", port,
           ++bind_retry_count, RETRY_COUNT);
+      std::cout << "Error: " << strerror(errno) << '\n';
       std::cout << fmt::format("Waiting {}s before retrying...\n",
                                bind_retry_count);
       sleep(1 * bind_retry_count);
@@ -358,84 +433,76 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
 
   if (bind_status == -1) {
     std::cout << std::strerror(errno) << '\n';
-    throw std::runtime_error("Unable to bind");
+    throw std::runtime_error(
+        fmt::format("Unable to bind after {} tries", RETRY_COUNT));
   }
+}
 
+void HttpServer::try_listen(const int &port) {
   if (listen(_listenfd, _numListeners) == -1) {
     throw std::runtime_error("unable to listen");
   }
+  std::cout << fmt::format("Now listening at port: {} with {} listeners\n",
+                           port, _numListeners);
+}
 
-  std::string msg = fmt::format("Now listening at port: {} with {} listeners\n",
-                                port, _numListeners);
-  std::cout << msg;
+void HttpServer::setup_interrupts() {
+  struct sigaction sigAction;
+  sigAction.sa_flags = 0;
+  sigAction.sa_handler = intHandler;
+  sigaction(SIGINT, &sigAction, NULL);
+}
+
+int HttpServer::create_socket() {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  // Get the socket's current flags
+  int flags = fcntl(fd, F_GETFL, 0);
+  // Set the socket to be non-blocking
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  // Set the socket to be reusable instantly; Violates TCP/IP protocol?
+  int iSetOption = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&iSetOption,
+             sizeof(iSetOption));
+  if (fd == -1) {
+    throw std::runtime_error("Failed to create socket");
+  }
+  return fd;
+}
+
+void HttpServer::run(const std::uint16_t &port) {
+  if (!_static_directory_path.empty()) {
+    staticSetup();
+  }
+  setup_interrupts();
+
+  _listenfd = create_socket();
+  try_bind(port);
+  try_listen(port);
+
+  fd_set current_sockets;
+  fd_set ready_sockets;
+  FD_ZERO(&current_sockets);
+  FD_SET(_listenfd, &current_sockets);
 
   while (_run) {
-    // create a sockaddr struct to store client information
-    sockaddr_in client_sa = {0}; // zero out the struct
-    socklen_t client_sa_len =
-        sizeof(sockaddr); // must initialize value to size of struct
+    ready_sockets = current_sockets;
 
-    // accept is now non-blocking as _listenfd is set to be non-blocking
-    _connfd = accept(_listenfd, reinterpret_cast<sockaddr *>(&client_sa),
-                     &client_sa_len);
-    if (_connfd == -1) {
-      if (errno == EWOULDBLOCK) {
-        continue;
-      } else {
-        close(_connfd);
-        close(_listenfd);
-        std::cout << "\nsockets closed. Exiting..." << std::endl;
-        throw std::runtime_error("error accepting connection");
-      }
-    } else if (verbose) {
-      char client_address[INET_ADDRSTRLEN] = {0};
-      inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
-                INET_ADDRSTRLEN);
-      std::cout << fmt::format("Recieved connection from ip address: {}",
-                               client_address)
-                << std::endl;
+    if (select(FD_SETSIZE, &ready_sockets, NULL, NULL, NULL) == -1) {
+      _cleanup();
+      throw std::runtime_error(
+          "an error occured at select (for accepting connections)");
     }
-
-    char buf[2] = {0};
-    std::string request_string;
-    fd_set fds;
-    timeval tv;
-    tv.tv_sec = 15;
-    tv.tv_usec = 0;
-    FD_ZERO(&fds);
-    FD_SET(_connfd, &fds);
-
-    int ret = select(_connfd + 1, &fds, NULL, NULL, &tv);
-
-
-    if (ret == 0) {
-      std::cout << "timed out\n";
-      continue;
-    } else if (ret == -1) {
-      std::cout << "\nClosing sockets...\n";
-      close(_connfd);
-      close(_listenfd);
-      throw std::runtime_error("select error");
-    } else if (FD_ISSET(_connfd, &fds)) {
-      while ((read(_connfd, buf, 1) > 0)) {
-        request_string.append(buf);
-        if (strutil::contains(request_string, "\r\n\r\n")) {
-          break;
+    for (int fd = 0; fd < FD_SETSIZE; ++fd) {
+      if (FD_ISSET(fd, &ready_sockets)) {
+        if (fd == _listenfd) {
+          int connfd = accept_connection();
+          FD_SET(connfd, &current_sockets);
+        } else {
+          handle_connections(fd);
+          FD_CLR(fd, &current_sockets);
         }
       }
     }
-    if (request_string.empty()) {
-      std::cout << "continued\n";
-      continue;
-    }
-    HttpRequest request(request_string);
-    handle_request_body(_connfd, request);
-
-    std::cout << fmt::format("Recieved request for route: {}", request.route())
-              << std::endl;
-    handle_requests(request);
   }
-  close(_connfd);
-  close(_listenfd);
-  std::cout << "\nsockets closed. Exiting..." << std::endl;
+  _cleanup();
 }
