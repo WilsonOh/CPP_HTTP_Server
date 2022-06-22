@@ -404,10 +404,14 @@ void HttpServer::listenAndRun(const std::uint16_t &port) {
 
     int ret = select(_connfd + 1, &fds, NULL, NULL, &tv);
 
+
     if (ret == 0) {
       std::cout << "timed out\n";
       continue;
     } else if (ret == -1) {
+      std::cout << "\nClosing sockets...\n";
+      close(_connfd);
+      close(_listenfd);
       throw std::runtime_error("select error");
     } else if (FD_ISSET(_connfd, &fds)) {
       while ((read(_connfd, buf, 1) > 0)) {
