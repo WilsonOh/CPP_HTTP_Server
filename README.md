@@ -8,8 +8,16 @@
 * Easy to include in project
 
 ## Usage
-First off, a simple "hello world" example:
+First off, a simple "hello world" example.<br>
+To use the library, clone the repo into a directory.<br>
+In this example we will just use the default, which is CPP_HTTP_Server.
+```console
+git clone https://github.com/WilsonOh/CPP_HTTP_Server.git
+```
+Include the library by providing the path to the `HttpServer.hpp` file as seen below.
 ```cpp
+#include "CPP_HTTP_Server/HttpServer.hpp"
+
 int main(void) {
   auto svr = HttpServer();
   svr.get("/", [](const HttpRequest &req, HttpResponse &res) {
