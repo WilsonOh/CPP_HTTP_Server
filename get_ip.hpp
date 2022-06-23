@@ -23,7 +23,7 @@ inline std::string get_ipaddr(const std::string &hostname) {
   struct addrinfo *res;
   int err_code;
   if ((err_code = getaddrinfo(hostname.c_str(), NULL, &hints, &res)) != 0) {
-    std::cout << gai_strerror(err_code) << std::endl;
+    std::cerr << gai_strerror(err_code) << std::endl;
     throw std::invalid_argument("get_ipaddr: invalid hostname");
   }
   char buf[100] = {0};

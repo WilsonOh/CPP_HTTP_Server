@@ -1,4 +1,5 @@
 #include "HttpServer.hpp"
+#include <cstring>
 
 /**
  * Global boolean value to determine whether or not to print out verbose
@@ -38,18 +39,8 @@ std::map<std::string, std::string> HttpRequest::headers() const {
 
 /**********************HttpRequest END******************************/
 
-
 /**********************HttpResponse START******************************/
 
-/**
- * Struct which encapsulates the contents of a HttpResponse
- *
- * This constructor simply sets the default status code to be 200
- * and returns a HttpResponse object. The rest of the HttpResponse
- * components are set through other member functions.
- *
- * @return a HttpResponse object with its status code initialized to 200
- */
 HttpResponse::HttpResponse() { _status_code = 200; }
 
 /**
@@ -83,45 +74,20 @@ void HttpResponse::set_status_code(const int &status_code) {
   _status_code = status_code;
 }
 
-/**
- * Take in a key value pair and set it as a HTTP header
- *
- * @param key the header key
- * @Param value the header value
- */
 void HttpResponse::set_header(const std::string &key,
                               const std::string &value) {
   _headers.insert_or_assign(key, value);
 }
 
-/**
- * Sets the content type of the response to be
- * "text/plain" and sets the response body.
- *
- * @param msg message to be sent as plain text
- */
 void HttpResponse::text(const std::string &msg) {
   this->set_header("Content-Type", "text/plain");
   _body = msg;
 }
 
-
-/**
- * Sets the response body to contain the contents
- * of the file specified at `path`.
- *
- * @param path path of the file to be sent
- */
 void HttpResponse::static_file(const std::string &path) {
   _body = strutil::slurp(path);
 }
 
-/**
- * Send an image as a response
- * Sets the content-type to image/png by default
- *
- * @param path the path to the image
- */
 void HttpResponse::image(const std::string &path) {
   this->set_header("Content-Type", "image/png");
   std::ifstream fin(path, std::ios::in | std::ios::binary);
@@ -131,13 +97,6 @@ void HttpResponse::image(const std::string &path) {
   fin.close();
 }
 
-/**
- * Send an image as a response and set the
- * content type to image/`type`
- *
- * @param path the path to the image
- * @param type the type of image (png/x-icon/jpg etc.)
- */
 void HttpResponse::image(const std::string &path, const std::string &type) {
   this->set_header("Content-Type", "image/" + type);
   std::ifstream fin(path, std::ios::in | std::ios::binary);
@@ -147,12 +106,6 @@ void HttpResponse::image(const std::string &path, const std::string &type) {
   fin.close();
 }
 
-/**
- * Send a raw html string as the response.
- * Content-Type will be set to "text/html".
- *
- * @param html_string 
- */
 void HttpResponse::html_string(const std::string &msg) {
   this->set_header("Content-Type", "text/html");
   _body = msg;
@@ -194,7 +147,7 @@ std::string HttpResponse::get_full_response() const {
   return this->get_headers() + _body;
 }
 
-//---------------------------------------------------------------
+/**********************HttpRequest END******************************/
 
 // Have to re-declare static class variables in the source file
 volatile sig_atomic_t HttpServer::_run;
@@ -206,9 +159,20 @@ HttpServer::HttpServer() {
   _numListeners = 3;
   HttpResponse not_found_res;
   not_found_res.set_status_code(404);
-  not_found_res.text("Wilson's Server: page request is not found");
-  _notFoundPage = not_found_res;
+  not_found_res.text("Wilson's Server: The requested page is not found");
+  _notFoundResponse = not_found_res;
 }
+
+/**
+ * Thing to note about the following route methods:
+ *
+ * The bracket operator [] for _routes is useful as
+ * it creates an entry if the key doesn't exist.
+ * This makes it very easy to add another HTTP
+ * method.
+ *
+ * `insert_or_assign` is useful for the same reasons as above.
+ */
 
 void HttpServer::get(const std::string &route, routeFunc func) {
   if (!_static_directory_path.empty()) {
@@ -218,6 +182,11 @@ void HttpServer::get(const std::string &route, routeFunc func) {
   _routes["GET"].insert_or_assign(route, func);
 }
 
+/**
+ * Internal method that doesn't throw if there is already a
+ * `_static_directory_path` defined.
+ * This is used for setting up GET routes in `staticSetup`
+ */
 void HttpServer::_get(const std::string &route, routeFunc func) {
   _routes["GET"].insert_or_assign(route, func);
 }
@@ -234,6 +203,16 @@ void HttpServer::put(const std::string &route, routeFunc func) {
   _routes["PUT"].insert_or_assign(route, func);
 }
 
+/**
+ * For the following methods which return `HttpServer`, I
+ * originally intended to simply modify the current instance
+ * and return a reference to `this`.
+ *
+ * However, that resulted in some weird behaviour where `std::cout`
+ * didn't print anything. That's why I'm creating a temporary `HttpServer`
+ * object and returning a copy of it.
+ */
+
 HttpServer HttpServer::setNumListeners(int num_listeners) {
   HttpServer tmp = *this;
   tmp._numListeners = num_listeners;
@@ -244,8 +223,8 @@ HttpServer HttpServer::set404Page(const std::string &path) {
   HttpServer tmp = *this;
   HttpResponse res;
   res.html(path);
-  tmp._notFoundPage = res;
-  tmp._notFoundPage.set_status_code(404);
+  tmp._notFoundResponse = res;
+  tmp._notFoundResponse.set_status_code(404);
   return tmp;
 }
 
@@ -253,27 +232,39 @@ HttpServer HttpServer::set404Text(const std::string &message) {
   HttpServer tmp = *this;
   HttpResponse res;
   res.text(message);
-  tmp._notFoundPage = res;
-  tmp._notFoundPage.set_status_code(404);
+  tmp._notFoundResponse = res;
+  tmp._notFoundResponse.set_status_code(404);
   return tmp;
 }
 
 HttpServer HttpServer::set404Response(HttpResponse res) {
   HttpServer tmp = *this;
-  tmp._notFoundPage = res;
-  tmp._notFoundPage.set_status_code(404);
+  tmp._notFoundResponse = res;
+  tmp._notFoundResponse.set_status_code(404);
   return tmp;
 }
 
-HttpServer HttpServer::static_directory_path(const std::string &path) {
+HttpServer HttpServer::mount_static_directory(const std::string &directory_path,
+                                              const std::string &mount_point) {
   HttpServer tmp = *this;
-  tmp._static_directory_path = path;
+  tmp._static_directory_path = directory_path;
   if (tmp._static_directory_path.back() != '/') {
     tmp._static_directory_path += "/";
   }
+  tmp._static_directory_mount_point = mount_point;
   return tmp;
 }
 
+/**
+ * Returns a copy of a `sockaddr_in` with its
+ * fields initialized.
+ *
+ * s_addr is initialized to `INADDR_ANY` which is basically
+ * "0.0.0.0" (I think) and sin_port is initialized to `port`.
+ *
+ * @param port The port number
+ * @return The sockaddr_in struct with its fields initialized
+ */
 static sockaddr_in get_sa(uint16_t port) {
   sockaddr_in sa;
   sa.sin_family = AF_INET;
@@ -282,6 +273,18 @@ static sockaddr_in get_sa(uint16_t port) {
   return sa;
 }
 
+/**
+ * The reason I'm using a try-catch instead of simply checking whether
+ * "content-length" is a key in req.headers() is because for some reason
+ * the latter method didn't work which caused `at` to throw a
+ * `std::out_of_range` exception.
+ *
+ * This function reads the request body into `req` by using the "Content-Length"
+ * header of the request.
+ *
+ * @param connfd The socket to be reading from
+ * @param req The HttpRequest object
+ */
 void handle_request_body(int connfd, HttpRequest &req) {
   unsigned long size_to_read;
   try {
@@ -289,14 +292,30 @@ void handle_request_body(int connfd, HttpRequest &req) {
   } catch (std::out_of_range const &) {
     return;
   }
-  std::string buf(size_to_read + 1, 0);
+  // various methods of reading the request body into req._body
+  
+  // unique pointer method (buf gets deallocated for automatically
+  // and doesn't read directly into the string's `data` so it's
+  // safer)
+  /* auto buf = std::make_unique<char []>(size_to_read + 1);
+  memset(&buf[0], 0, size_to_read + 1);
+  read(connfd, &buf[0], size_to_read);
+  req._body.append(buf.get()); */
+
+  // resize method (don't need to use a temp variable in between)
+  // I'll settle on this one for now.
+  // note: don't have to take the null-terminating character into
+  // account when resizing the string
+  //
+  // could be dangerous to read directly into `req._body.data()`,
+  // but since this is the only place we modify it, it should be ok
+  req._body.resize(size_to_read);
+  read(connfd, req._body.data(), size_to_read);
+
+  // Temp string method
+  /* std::string buf(size_to_read + 1, 0);
   read(connfd, buf.data(), size_to_read);
-  req._body = buf;
-  /* char *buf = new char[size_to_read + 1];
-  memset(buf, 0, size_to_read + 1);
-  read(connfd, buf, size_to_read);
-  req._body.append(buf);
-  delete[] buf; */
+  req._body = buf; */
 }
 
 void HttpServer::handle_reply(const HttpRequest &request, int connfd) const {
@@ -314,15 +333,17 @@ void HttpServer::handle_reply(const HttpRequest &request, int connfd) const {
       std::string reply = res.get_full_response();
       write(connfd, reply.c_str(), reply.length());
       close(connfd);
+      // return after a succesful response
       return;
     }
   }
+  // Only enter this block if none of the routes match
   if (verbose) {
     std::cout << fmt::format("Route {} doesn't match any mappings.",
                              request.route())
               << std::endl;
   }
-  std::string reply = _notFoundPage.get_full_response();
+  std::string reply = _notFoundResponse.get_full_response();
   write(connfd, reply.c_str(), reply.length());
   close(connfd);
 }
@@ -340,15 +361,22 @@ void HttpServer::staticSetup() {
     throw std::invalid_argument(
         "index.html does not exist in the root directory of the static folder");
   }
-  this->_get("/", [=](const HttpRequest &req, HttpResponse &res) {
-    res.html(root / "index.html");
-  });
+  // Set the entry point "index.html" to the route specified at
+  // `_static_directory_mount_point`
+  this->_get(_static_directory_mount_point,
+             [=](const HttpRequest &req, HttpResponse &res) {
+               res.html(root / "index.html");
+             });
+  // Recursively list all the files in the static directory
   for (const auto &entry :
        std::filesystem::recursive_directory_iterator(_static_directory_path)) {
     std::string extension(entry.path().extension());
+    // This skips all the directory entries
     if (!is_regular_file(entry.path())) {
       continue;
     }
+    // Get the file path relatice to the root i.e. /static instead of
+    // /build/static
     std::string file_name = std::filesystem::relative(entry.path(), root);
     this->_get("/" + file_name, [=](const HttpRequest &req, HttpResponse &res) {
       std::string content_type;
@@ -390,6 +418,8 @@ void HttpServer::handle_connections(int connfd) {
   FD_ZERO(&fds);
   FD_SET(connfd, &fds);
 
+  // Use select here so the server will not wait indefintely for a read
+  // as it will return from this function after the time out
   int ret = select(connfd + 1, &fds, NULL, NULL, &tv);
 
   if (ret == 0) {
@@ -400,6 +430,7 @@ void HttpServer::handle_connections(int connfd) {
     throw std::runtime_error(
         "an error has occured at select (for reading from the client)");
   } else if (FD_ISSET(connfd, &fds)) {
+    // Read from the client up to the end of the headers
     while ((read(connfd, buf, 1) > 0)) {
       request_string.append(buf);
       if (strutil::contains(request_string, "\r\n\r\n")) {
@@ -407,16 +438,19 @@ void HttpServer::handle_connections(int connfd) {
       }
     }
   }
+  // sanity check just in case, but shouldn't happen
   if (request_string.empty()) {
     std::cout << "Empty Request\n";
     return;
   }
+  // parse and store the HTTP request headers and body in `request`
   HttpRequest request(request_string);
   handle_request_body(connfd, request);
 
   std::cout << fmt::format("Recieved {} request for route: {}",
                            request.method(), request.route())
             << std::endl;
+  // handle the reply to the client based on the request recieved
   handle_reply(request, connfd);
 }
 
@@ -436,9 +470,11 @@ int HttpServer::accept_connection() {
                       &client_sa_len);
   if (connfd == -1) {
     _cleanup();
+    std::cerr << std::strerror(errno) << std::endl;
     throw std::runtime_error("error accepting connection");
   }
   if (verbose) {
+    // use `INET_ADDRSTRLEN` as the max size of an internet address
     char client_address[INET_ADDRSTRLEN] = {0};
     inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
               INET_ADDRSTRLEN);
@@ -454,27 +490,29 @@ void HttpServer::try_bind(const int &port) {
   int bind_status;
   sockaddr_in sa = get_sa(port);
   do {
-    bind_status = bind(_listenfd, (sockaddr *)&sa, sizeof(sockaddr));
+    bind_status =
+        bind(_listenfd, reinterpret_cast<sockaddr *>(&sa), sizeof(sockaddr));
     if (bind_status == -1) {
       std::cout << fmt::format(
           "Binding to port {} failed. Retry count: {}/{}\n", port,
-          ++bind_retry_count, RETRY_COUNT);
-      std::cout << "Error: " << strerror(errno) << '\n';
+          ++bind_retry_count, BIND_RETRY_COUNT);
+      std::cerr << std::strerror(errno) << std::endl;
       std::cout << fmt::format("Waiting {}s before retrying...\n",
                                bind_retry_count);
       sleep(1 * bind_retry_count);
     }
-  } while (bind_status == -1 && bind_retry_count < RETRY_COUNT);
+  } while (bind_status == -1 && bind_retry_count < BIND_RETRY_COUNT);
 
   if (bind_status == -1) {
-    std::cout << std::strerror(errno) << '\n';
+    std::cerr << std::strerror(errno) << std::endl;
     throw std::runtime_error(
-        fmt::format("Unable to bind after {} tries", RETRY_COUNT));
+        fmt::format("Unable to bind after {} tries", BIND_RETRY_COUNT));
   }
 }
 
 void HttpServer::try_listen(const int &port) {
   if (listen(_listenfd, _numListeners) == -1) {
+    std::cerr << strerror(errno) << std::endl;
     throw std::runtime_error("unable to listen");
   }
   std::cout << fmt::format("Now listening at port: {} with {} listeners\n",
@@ -505,6 +543,7 @@ int HttpServer::create_socket() {
 }
 
 void HttpServer::run(const std::uint16_t &port) {
+  // setup static directory first so that any errors can be caught early
   if (!_static_directory_path.empty()) {
     staticSetup();
   }
@@ -514,12 +553,14 @@ void HttpServer::run(const std::uint16_t &port) {
   try_bind(port);
   try_listen(port);
 
+  // credits to Jacob Sorber for the `select` method
   fd_set current_sockets;
   fd_set ready_sockets;
   FD_ZERO(&current_sockets);
   FD_SET(_listenfd, &current_sockets);
 
   while (_run) {
+    // reinitialize `ready_sockets` every loop as `select` is destructive
     ready_sockets = current_sockets;
 
     if (select(FD_SETSIZE, &ready_sockets, NULL, NULL, NULL) == -1) {
@@ -530,14 +571,22 @@ void HttpServer::run(const std::uint16_t &port) {
     for (int fd = 0; fd < FD_SETSIZE; ++fd) {
       if (FD_ISSET(fd, &ready_sockets)) {
         if (fd == _listenfd) {
+          // if _listenfd is ready, that means there is a 
+          // incoming connection, so we add it to the fd set
           int connfd = accept_connection();
           FD_SET(connfd, &current_sockets);
         } else {
+          // if it's not _listenfd, then it must be a client
+          // socket which is ready. This means we should read
+          // from the client socket, so we call `handle_connections`
+          // with the fd
           handle_connections(fd);
           FD_CLR(fd, &current_sockets);
         }
       }
     }
   }
+  // clean up when SIGINT is called and _run becomes 0,
+  // breaking the while loop
   _cleanup();
 }
