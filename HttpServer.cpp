@@ -257,11 +257,14 @@ void handle_request_body(int connfd, HttpRequest &req) {
   } catch (std::out_of_range const &) {
     return;
   }
-  char *buf = new char[size_to_read + 1];
+  std::string buf(size_to_read + 1, 0);
+  read(connfd, buf.data(), size_to_read);
+  req._body = buf;
+  /* char *buf = new char[size_to_read + 1];
   memset(buf, 0, size_to_read + 1);
   read(connfd, buf, size_to_read);
   req._body.append(buf);
-  delete[] buf;
+  delete[] buf; */
 }
 
 void HttpServer::handle_reply(const HttpRequest &request, int connfd) const {
