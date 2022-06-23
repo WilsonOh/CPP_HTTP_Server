@@ -1,42 +1,21 @@
-#include <arpa/inet.h>
-#include <cstdlib>
-#include <cstring>
-#include <errno.h>
-#include <fcntl.h>
-#include <fmt/core.h>
-#include <fmt/format.h>
-#include <memory>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <signal.h>
-#include <stdexcept>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <thread>
-#include <unistd.h>
-
 #include "HttpServer.hpp"
-#include "get_ip.hpp"
-#include "strutil.hpp"
-#include <algorithm>
-#include <filesystem>
-#include <string>
-#include <vector>
 
+/**
+ * Global boolean value to determine whether or not to print out verbose
+ * debugging messages Compile with -DVERBOSE to set this to true
+ */
 #ifdef VERBOSE
 static bool verbose = true;
 #else
 static bool verbose = false;
 #endif
 
-//--------------------HttpResponse-------------------------------
+/**********************HttpRequest START******************************/
 
-HttpRequest::HttpRequest(std::string text) {
+HttpRequest::HttpRequest(std::string raw_headers) {
   using namespace strutil;
-  std::string::size_type n = text.find("\r\n\r\n");
-  std::string header_string(text, 0, n);
+  std::string::size_type n = raw_headers.find("\r\n\r\n");
+  std::string header_string(raw_headers, 0, n);
   std::vector<std::string> headers = split(header_string, "\r\n");
   auto it = headers.begin();
   std::string status_line(*it);
@@ -57,26 +36,82 @@ std::map<std::string, std::string> HttpRequest::headers() const {
   return _headers;
 }
 
-//---------------------------------------------------------------
+/**********************HttpRequest END******************************/
 
-//--------------------HttpResponse-------------------------------
 
+/**********************HttpResponse START******************************/
+
+/**
+ * Struct which encapsulates the contents of a HttpResponse
+ *
+ * This constructor simply sets the default status code to be 200
+ * and returns a HttpResponse object. The rest of the HttpResponse
+ * components are set through other member functions.
+ *
+ * @return a HttpResponse object with its status code initialized to 200
+ */
+HttpResponse::HttpResponse() { _status_code = 200; }
+
+/**
+ * Helper function to get the corresponding description of
+ * a status code.
+ * TODO: There's definitely a better way to handle this as there's
+ * a very limited selection of status codes here but this works for now.
+ *
+ * @param status_code the status code
+ * @return the description corresponding to the given status code, or else
+ * "OK" by default if the code if not included in the map.
+ *
+ */
 static std::string get_status_msg(const uint8_t &status_code) {
   std::map<uint8_t, std::string> codes = {{200, "OK"},
                                           {301, "Moved Permanently"},
                                           {302, "Found"},
                                           {400, "Bad Request"},
                                           {404, "Not Found"}};
-  return codes.at(status_code);
+  if (codes.find(status_code) != codes.end()) {
+    return codes.at(status_code);
+  }
+  return "OK";
 }
 
-HttpResponse::HttpResponse() { _status_code = 200; }
+/* The following methods are basically Setters and Getters
+ * for HttpResponse
+ */
 
+void HttpResponse::set_status_code(const int &status_code) {
+  _status_code = status_code;
+}
+
+/**
+ * Take in a key value pair and set it as a HTTP header
+ *
+ * @param key the header key
+ * @Param value the header value
+ */
+void HttpResponse::set_header(const std::string &key,
+                              const std::string &value) {
+  _headers.insert_or_assign(key, value);
+}
+
+/**
+ * Sets the content type of the response to be
+ * "text/plain" and sets the response body.
+ *
+ * @param msg message to be sent as plain text
+ */
 void HttpResponse::text(const std::string &msg) {
   this->set_header("Content-Type", "text/plain");
   _body = msg;
 }
 
+
+/**
+ * Sets the response body to contain the contents
+ * of the file specified at `path`.
+ *
+ * @param path path of the file to be sent
+ */
 void HttpResponse::static_file(const std::string &path) {
   _body = strutil::slurp(path);
 }
@@ -86,7 +121,6 @@ void HttpResponse::static_file(const std::string &path) {
  * Sets the content-type to image/png by default
  *
  * @param path the path to the image
- *
  */
 void HttpResponse::image(const std::string &path) {
   this->set_header("Content-Type", "image/png");
@@ -98,12 +132,11 @@ void HttpResponse::image(const std::string &path) {
 }
 
 /**
- * Send an image as a response
- * Sets the content-type to image/png by default
+ * Send an image as a response and set the
+ * content type to image/`type`
  *
  * @param path the path to the image
  * @param type the type of image (png/x-icon/jpg etc.)
- *
  */
 void HttpResponse::image(const std::string &path, const std::string &type) {
   this->set_header("Content-Type", "image/" + type);
@@ -114,9 +147,15 @@ void HttpResponse::image(const std::string &path, const std::string &type) {
   fin.close();
 }
 
-void HttpResponse::html_string(const std::string &html_string) {
+/**
+ * Send a raw html string as the response.
+ * Content-Type will be set to "text/html".
+ *
+ * @param html_string 
+ */
+void HttpResponse::html_string(const std::string &msg) {
   this->set_header("Content-Type", "text/html");
-  _body = html_string;
+  _body = msg;
 }
 
 void HttpResponse::html(const std::string &path) {
@@ -129,10 +168,12 @@ void HttpResponse::json(const std::string &json_string) {
   _body = json_string;
 }
 
-void HttpResponse::downloadable(const std::string &path, const std::string &content_type) {
+void HttpResponse::downloadable(const std::string &path,
+                                const std::string &content_type) {
   std::string filename = std::filesystem::path(path).filename();
   this->set_header("Content-Type", content_type);
-  this->set_header("Content-Disposition", fmt::format(R"(attachment; filename="{}")", filename));
+  this->set_header("Content-Disposition",
+                   fmt::format(R"(attachment; filename="{}")", filename));
   this->static_file(path);
 }
 
@@ -151,15 +192,6 @@ std::string HttpResponse::get_headers() const {
 
 std::string HttpResponse::get_full_response() const {
   return this->get_headers() + _body;
-}
-
-void HttpResponse::set_status_code(const int &status_code) {
-  _status_code = status_code;
-}
-
-void HttpResponse::set_header(const std::string &key,
-                              const std::string &value) {
-  _headers.insert_or_assign(key, value);
 }
 
 //---------------------------------------------------------------
