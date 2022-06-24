@@ -111,8 +111,9 @@ The static directory is mounted at `/www` instead of `/` here, and a POST route 
 Lastly, the server is set to run at port 8000.
 
 ### Other methods
-There are a lot of "convenience methods" for the `HttpResponse` object, such as `res.image` to send an image from the host directory or `res.downloadable` which sends a file as an attachment to the client.<br>
-`res.set_header` can also be used to add to the HTTP response headers or override any existing ones.<br>
+There are a lot of "convenience methods" for the `HttpResponse` object, such as `res.image` to send an image from the host directory or `res.downloadable` which sends a file as an attachment to the client.<br><br>
+`res.redirect` can redirect the browser to a relative route or another URL, and
+`res.set_header` can be used to add to the HTTP response headers or override any existing ones.<br><br>
 Feel free to look through the header file for the full list of methods available!
 
 ## TODO
