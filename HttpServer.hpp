@@ -215,6 +215,8 @@ public:
    */
   void downloadable(const std::string &path,
                     const std::string &content_type = "text/html");
+
+  void redirect(const std::string &new_location, const int &status_code = 301);
 };
 
 /**
@@ -499,8 +501,9 @@ private:
   void staticSetup();
 
   /**
-   * Identical to `get`, but used internally in `staticSetup` as defining additional
-   * GET routes is not allowed when `_static_directory_path` is specified.
+   * Identical to `get`, but used internally in `staticSetup` as defining
+   * additional GET routes is not allowed when `_static_directory_path` is
+   * specified.
    */
   void _get(const std::string &route, routeFunc);
 

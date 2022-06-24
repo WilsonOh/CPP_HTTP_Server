@@ -130,6 +130,11 @@ void HttpResponse::downloadable(const std::string &path,
   this->static_file(path);
 }
 
+void HttpResponse::redirect(const std::string &new_location, const int &status_code) {
+  this->set_status_code(status_code);
+  this->set_header("Location", new_location);
+}
+
 std::string HttpResponse::get_headers() const {
   std::string res(fmt::format("HTTP/1.1 {} {}\r\n", _status_code,
                               get_status_msg(_status_code)));
