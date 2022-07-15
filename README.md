@@ -1,34 +1,56 @@
 # This is a simple HTTP server written in C++ for learning purposes.
 
-## Features
+## Features ✨
 * Very simple expressjs-like API, albeit with way fewer features
 * Support for GET, POST, PUT, DELETE methods (should be trivial to add more if needed)
 * Psuedo-asynchronous with the help of `select`, which also helps keep the resources used low
 * Easily serve static directories (examples below)
 * Easy to include in project
 
-## This library will not work on windows!
+> **Note** This library works only on Linux and macOS!
 
 ## Dependencies
-* [fmt library](https://fmt.dev/latest/index.html)
-* C++ 17
+* [`fmt` library](https://fmt.dev/latest/index.html)
+* `C++ 17`
 * Unix-based OS (only tested on macOS and Linux)
+
+## Installation
+### CMake Integration
+This project should be used through its CMake integration.<br>
+Simply add the following lines to your project `CMakeLists.txt` file:
+```cmake
+include(FetchContent)
+
+cmake_minimum_required(VERSION 3.23.2)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED true)
+
+project(<Your Project Name> CXX)
+
+FetchContent_Declare(
+  HttpClient
+  GIT_REPOSITORY https://github.com/WilsonOh/CPP_HTTP_Server.git
+  GIT_TAG main
+)
+
+FetchContent_MakeAvailable(HttpServer)
+
+add_executable(${PROJECT_NAME} <Your Source Files>...)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE HttpServer)
+```
 
 ## Documentation
 The documentation for the API is in the _fully commented_ `HttpServer.hpp` header file.<br>
 In the `Usage` section below I will go through some example usages.
 
 ## Usage
-First off, a simple "hello world" example.<br>
-To use the library, clone the repo into a directory.<br>
-In this example we will just use the default, which is CPP_HTTP_Server.
-```console
-git clone https://github.com/WilsonOh/CPP_HTTP_Server.git
-```
-Include the library by providing the path to the `HttpServer.hpp` file as seen below.
+First off, a simple "hello world" example.
+Install the library into your project using `CMake` as shown above, and then run the following code:
 ```cpp
 // main.cpp
-#include "CPP_HTTP_Server/HttpServer.hpp"
+#include <HttpServer.hpp>
 
 int main(void) {
   auto svr = HttpServer();
@@ -37,10 +59,6 @@ int main(void) {
   });
   svr.run();
 }
-```
-To compile:
-```console
-g++ main.cpp CPP_HTTP_Server/HttpServer.cpp -lfmt -o main
 ```
 ### Explanation:
 We first create an instance of `HttpServer` which initializes its fields to the default values.
@@ -67,7 +85,7 @@ static
 ```
 We can serve the `static` directory and set the 404 page to `static/404.html` with 20 listeners with the following snippet:
 ```cpp
-#include "CPP_HTTP_Server/HttpServer.hpp"
+#include <HttpServer.hpp>
 
 int main(void) {
   auto svr = HttpServer()
@@ -81,11 +99,11 @@ int main(void) {
 `setNumListeners` and `set404Page` are self explanatory.<br>
 `mount_static_directory` mounts the static directory on `/` by default if there is only one argument, but a second argument for the mount point can be passed in.<br>
 `run` sets the socket to listen at port 3000 by default with no arguments, but a port number can be passed in if needed.
-### *NOTE*: static directory hosting works with nested directories too!
+> **Note** static directory hosting works with nested directories too!
 
 ### Another Example
 ```cpp
-#include "CPP_HTTP_Server/HttpServer.hpp"
+#include <HttpServer.hpp>
 
 int main(void) {
 
