@@ -12,7 +12,7 @@
 ## Dependencies
 * [`fmt` library](https://fmt.dev/latest/index.html)
 * `C++ 17`
-* Unix-based OS (only tested on macOS and Linux)
+* `cmake` 3.23.2 (for integrating this library into your project)
 
 ## Installation
 ### CMake Integration
