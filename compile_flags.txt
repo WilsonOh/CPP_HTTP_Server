@@ -1,8 +1,0 @@
--g
--std=c++17
--lfmt
--Wall
--Wpedantic
--fsanitize=bounds
--fsanitize=address
--DVERBOSE
