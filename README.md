@@ -10,7 +10,6 @@
 > **Note** This library works only on Linux and macOS!
 
 ## Dependencies
-* [`fmt` library](https://fmt.dev/latest/index.html)
 * `C++ 17`
 * `cmake` 3.23.2 (for integrating this library into your project)
 
@@ -23,13 +22,10 @@ include(FetchContent)
 
 cmake_minimum_required(VERSION 3.23.2)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED true)
-
 project(<Your Project Name> CXX)
 
 FetchContent_Declare(
-  HttpClient
+  HttpServer
   GIT_REPOSITORY https://github.com/WilsonOh/CPP_HTTP_Server.git
   GIT_TAG main
 )
