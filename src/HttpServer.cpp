@@ -1,4 +1,5 @@
 #include "HttpServer.hpp"
+#include "fmt/core.h"
 #include <cstring>
 
 /**
@@ -55,11 +56,10 @@ HttpResponse::HttpResponse() { _status_code = 200; }
  *
  */
 static std::string get_status_msg(const uint8_t &status_code) {
-  std::map<uint8_t, std::string> codes = {{200, "OK"},
-                                          {301, "Moved Permanently"},
-                                          {302, "Found"},
-                                          {400, "Bad Request"},
-                                          {404, "Not Found"}};
+  std::map<uint8_t, std::string> codes = {
+      {200, "OK"},        {301, "Moved Permanently"},
+      {302, "Found"},     {400, "Bad Request"},
+      {404, "Not Found"}, {405, "Method Not Allowed"}};
   if (codes.find(status_code) != codes.end()) {
     return codes.at(status_code);
   }
@@ -130,7 +130,8 @@ void HttpResponse::downloadable(const std::string &path,
   this->static_file(path);
 }
 
-void HttpResponse::redirect(const std::string &new_location, const int &status_code) {
+void HttpResponse::redirect(const std::string &new_location,
+                            const int &status_code) {
   this->set_status_code(status_code);
   this->set_header("Location", new_location);
 }
@@ -298,7 +299,7 @@ void handle_request_body(int connfd, HttpRequest &req) {
     return;
   }
   // various methods of reading the request body into req._body
-  
+
   // unique pointer method (buf gets deallocated for automatically
   // and doesn't read directly into the string's `data` so it's
   // safer)
@@ -323,34 +324,42 @@ void handle_request_body(int connfd, HttpRequest &req) {
   req._body = buf; */
 }
 
-void HttpServer::handle_reply(const HttpRequest &request, int connfd) const {
-  if (_routes.find(request.method()) != _routes.end()) {
-    auto route = _routes.at(request.method());
-    if (route.find(request.route()) != route.end()) {
-      if (verbose) {
-        std::cout << fmt::format("Route {} matched for method {}!",
-                                 request.route(), request.method())
-                  << std::endl;
-      }
-      auto func = route.at(request.route());
-      HttpResponse res;
-      func(request, res);
-      std::string reply = res.get_full_response();
-      write(connfd, reply.c_str(), reply.length());
-      close(connfd);
-      // return after a succesful response
-      return;
-    }
+void HttpServer::handle_reply(const HttpRequest &request, int connfd) {
+
+  HttpResponse res;
+  res.set_header("x-powered-by", "Wilson-Server");
+  if (!_routes.contains(request.method())) {
+    fmt::print(stderr,
+               "No route handler configured for the requested method: {}\n",
+               request.method());
+    res.set_status_code(405);
+    std::string reply = res.get_full_response();
+    write(connfd, reply.c_str(), reply.length());
+    return;
   }
-  // Only enter this block if none of the routes match
-  if (verbose) {
-    std::cout << fmt::format("Route {} doesn't match any mappings.",
-                             request.route())
-              << std::endl;
+
+  auto route = _routes.at(request.method());
+
+  if (!route.contains(request.route())) {
+    fmt::print(stderr,
+               "No route handler configured for the requested path: {}\n",
+               request.route());
+    _notFoundResponse.set_header("x-powered-by", "Wilson-Server");
+    std::string reply = _notFoundResponse.get_full_response();
+    write(connfd, reply.c_str(), reply.length());
+    return;
   }
-  std::string reply = _notFoundResponse.get_full_response();
+
+  fmt::print("Route func found for the requested method: {} and path: {}\n",
+             request.method(), request.route());
+
+  auto routeFunc = route.at(request.route());
+
+  auto func = route.at(request.route());
+  func(request, res);
+  // add custom powered-by header
+  std::string reply = res.get_full_response();
   write(connfd, reply.c_str(), reply.length());
-  close(connfd);
 }
 
 void HttpServer::staticSetup() {
@@ -416,37 +425,20 @@ void HttpServer::staticSetup() {
 void HttpServer::handle_connections(int connfd) {
   char buf[2] = {0};
   std::string request_string;
-  fd_set fds;
-  timeval tv;
-  tv.tv_sec = 5;
-  tv.tv_usec = 0;
-  FD_ZERO(&fds);
-  FD_SET(connfd, &fds);
-
-  // Use select here so the server will not wait indefintely for a read
-  // as it will return from this function after the time out
-  int ret = select(connfd + 1, &fds, NULL, NULL, &tv);
-
-  if (ret == 0) {
-    std::cout << "reading from the client has timed out\n";
-    return;
-  } else if (ret == -1) {
-    _cleanup();
-    throw std::runtime_error(
-        "an error has occured at select (for reading from the client)");
-  } else if (FD_ISSET(connfd, &fds)) {
-    // Read from the client up to the end of the headers
-    while ((read(connfd, buf, 1) > 0)) {
-      request_string.append(buf);
-      if (strutil::contains(request_string, "\r\n\r\n")) {
-        break;
-      }
+  while (true) {
+    int len_read = read(connfd, buf, 1);
+    if (len_read == 0) {
+      fmt::print("Client closed the connection\n");
+      return;
     }
-  }
-  // sanity check just in case, but shouldn't happen
-  if (request_string.empty()) {
-    std::cout << "Empty Request\n";
-    return;
+    if (len_read < 0) {
+      fmt::print("Error reading from connection\n");
+      return;
+    }
+    request_string.append(buf);
+    if (request_string.ends_with("\r\n\r\n")) {
+      break;
+    }
   }
   // parse and store the HTTP request headers and body in `request`
   HttpRequest request(request_string);
@@ -478,14 +470,13 @@ int HttpServer::accept_connection() {
     std::cerr << std::strerror(errno) << std::endl;
     throw std::runtime_error("error accepting connection");
   }
+  // use `INET_ADDRSTRLEN` as the max size of an internet address
+  char client_address[INET_ADDRSTRLEN] = {0};
+  inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
+            INET_ADDRSTRLEN);
   if (verbose) {
-    // use `INET_ADDRSTRLEN` as the max size of an internet address
-    char client_address[INET_ADDRSTRLEN] = {0};
-    inet_ntop(client_sa.sin_family, &client_sa.sin_addr, client_address,
-              INET_ADDRSTRLEN);
-    std::cout << fmt::format("Recieved connection from ip address: {}",
-                             client_address)
-              << std::endl;
+    fmt::print("Recieved connection from address: {}:{}", client_address,
+               client_sa.sin_port);
   }
   return connfd;
 }
@@ -568,7 +559,9 @@ void HttpServer::run(const std::uint16_t &port) {
     // reinitialize `ready_sockets` every loop as `select` is destructive
     ready_sockets = current_sockets;
 
-    if (select(FD_SETSIZE, &ready_sockets, NULL, NULL, NULL) == -1) {
+    int select_ret = select(FD_SETSIZE, &ready_sockets, NULL, NULL, NULL) == -1;
+
+    if (select_ret == -1) {
       _cleanup();
       throw std::runtime_error(
           "an error occured at select (for accepting connections)");
@@ -576,7 +569,7 @@ void HttpServer::run(const std::uint16_t &port) {
     for (int fd = 0; fd < FD_SETSIZE; ++fd) {
       if (FD_ISSET(fd, &ready_sockets)) {
         if (fd == _listenfd) {
-          // if _listenfd is ready, that means there is a 
+          // if _listenfd is ready, that means there is a
           // incoming connection, so we add it to the fd set
           int connfd = accept_connection();
           FD_SET(connfd, &current_sockets);
@@ -587,6 +580,7 @@ void HttpServer::run(const std::uint16_t &port) {
           // with the fd
           handle_connections(fd);
           FD_CLR(fd, &current_sockets);
+          close(fd);
         }
       }
     }

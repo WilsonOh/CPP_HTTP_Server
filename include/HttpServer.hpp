@@ -480,7 +480,7 @@ private:
    * @param connfd The file descriptor of the client
    *
    */
-  void handle_reply(const HttpRequest &request, int connfd) const;
+  void handle_reply(const HttpRequest &request, int connfd);
 
   /**
    * Reads from `connfd` using `select`.
