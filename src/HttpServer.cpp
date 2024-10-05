@@ -1,6 +1,9 @@
 #include "HttpServer.hpp"
 #include "fmt/core.h"
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
+#include <queue>
 #include <thread>
 
 /**
@@ -12,6 +15,58 @@ static bool verbose = true;
 #else
 static bool verbose = false;
 #endif
+
+class ThreadPool {
+public:
+  ThreadPool(size_t thread_count) : stop(false) {
+    for (size_t i = 0; i < thread_count; ++i) {
+      workers.emplace_back([this] { worker_thread(); });
+    }
+  }
+  ~ThreadPool() {
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      stop = true;
+    }
+    // wait for all threads to finish execution before exiting
+    condition.notify_all();
+    for (std::thread &worker : workers) {
+      worker.join();
+    }
+  }
+
+  void enqueue(std::function<void()> task) {
+    {
+      std::lock_guard<std::mutex> lock(queue_mutex);
+      tasks.push(task);
+    }
+    condition.notify_one();
+  }
+
+private:
+  std::vector<std::thread> workers;
+  std::queue<std::function<void()>> tasks;
+  std::mutex queue_mutex;
+  std::condition_variable condition;
+  bool stop;
+
+  void worker_thread() {
+    using namespace std::chrono_literals;
+    while (true) {
+      std::function<void()> task;
+      {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        condition.wait(lock, [this] { return stop || !tasks.empty(); });
+        if (stop && tasks.empty()) {
+          return;
+        }
+        task = std::move(tasks.front());
+        tasks.pop();
+      }
+      task();
+    }
+  }
+};
 
 /**********************HttpRequest START******************************/
 
@@ -620,13 +675,17 @@ void HttpServer::run(const std::uint16_t &port) {
   try_bind(port);
   try_listen(port);
 
-  // credits to Jacob Sorber for the `select` method
+  int num_threads = std::thread::hardware_concurrency();
+  if (verbose) {
+    fmt::print("Creating thread pool with {} threads\n", num_threads);
+  }
+  ThreadPool pool(num_threads);
 
   while (_run) {
     int connfd = accept_connection();
-    auto t = std::thread(handle_connections_free, connfd, _routes,
-                         _notFoundResponse);
-    t.detach();
+    pool.enqueue([connfd, this]() {
+      handle_connections_free(connfd, _routes, _notFoundResponse);
+    });
   }
   // clean up when SIGINT is called and _run becomes 0,
   // breaking the while loop
