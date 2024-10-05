@@ -305,7 +305,7 @@ class HttpServer {
    * Each route map consists of a route and their corresponding
    * lambda.
    */
-  std::map<std::string, std::map<std::string, routeFunc>> _routes;
+  std::unordered_map<std::string, std::map<std::string, routeFunc>> _routes;
 
 public:
   /**

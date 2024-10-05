@@ -1,6 +1,7 @@
 #include "HttpServer.hpp"
 #include "fmt/core.h"
 #include <cstring>
+#include <thread>
 
 /**
  * Global boolean value to determine whether or not to print out verbose
@@ -386,7 +387,7 @@ void HttpServer::staticSetup() {
        std::filesystem::recursive_directory_iterator(_static_directory_path)) {
     std::string extension(entry.path().extension());
     // This skips all the directory entries
-    if (!is_regular_file(entry.path())) {
+    if (!std::filesystem::is_regular_file(entry.path())) {
       continue;
     }
     // Get the file path relatice to the root i.e. /static instead of
@@ -538,6 +539,76 @@ int HttpServer::create_socket() {
   return fd;
 }
 
+void handle_connections_free(
+    int connfd,
+    std::unordered_map<
+        std::string,
+        std::map<std::string,
+                 std::function<void(const HttpRequest &, HttpResponse &)>>>
+        _routes,
+    HttpResponse _notFoundResponse) {
+  char buf[2] = {0};
+  std::string request_string;
+  while (true) {
+    int len_read = read(connfd, buf, 1);
+    if (len_read == 0) {
+      fmt::print("Client closed the connection\n");
+      return;
+    }
+    if (len_read < 0) {
+      fmt::print("Error reading from connection\n");
+      return;
+    }
+    request_string.append(buf);
+    if (request_string.ends_with("\r\n\r\n")) {
+      break;
+    }
+  }
+  // parse and store the HTTP request headers and body in `request`
+  HttpRequest request(request_string);
+  handle_request_body(connfd, request);
+
+  std::cout << fmt::format("Recieved {} request for route: {}",
+                           request.method(), request.route())
+            << std::endl;
+  // handle the reply to the client based on the request recieved
+  HttpResponse res;
+  res.set_header("x-powered-by", "Wilson-Server");
+  if (!_routes.contains(request.method())) {
+    fmt::print(stderr,
+               "No route handler configured for the requested method: {}\n",
+               request.method());
+    res.set_status_code(405);
+    std::string reply = res.get_full_response();
+    write(connfd, reply.c_str(), reply.length());
+    return;
+  }
+
+  auto route = _routes.at(request.method());
+
+  if (!route.contains(request.route())) {
+    fmt::print(stderr,
+               "No route handler configured for the requested path: {}\n",
+               request.route());
+    _notFoundResponse.set_header("x-powered-by", "Wilson-Server");
+    std::string reply = _notFoundResponse.get_full_response();
+    write(connfd, reply.c_str(), reply.length());
+    return;
+  }
+
+  fmt::print("Route func found for the requested method: {} and path: {}\n",
+             request.method(), request.route());
+
+  auto routeFunc = route.at(request.route());
+
+  auto func = route.at(request.route());
+  func(request, res);
+  // add custom powered-by header
+  std::string reply = res.get_full_response();
+  write(connfd, reply.c_str(), reply.length());
+  close(connfd);
+}
+
 void HttpServer::run(const std::uint16_t &port) {
   // setup static directory first so that any errors can be caught early
   if (!_static_directory_path.empty()) {
@@ -545,45 +616,17 @@ void HttpServer::run(const std::uint16_t &port) {
   }
   setup_interrupts();
 
-  _listenfd = create_socket();
+  _listenfd = socket(AF_INET, SOCK_STREAM, 0); // create_socket();
   try_bind(port);
   try_listen(port);
 
   // credits to Jacob Sorber for the `select` method
-  fd_set current_sockets;
-  fd_set ready_sockets;
-  FD_ZERO(&current_sockets);
-  FD_SET(_listenfd, &current_sockets);
 
   while (_run) {
-    // reinitialize `ready_sockets` every loop as `select` is destructive
-    ready_sockets = current_sockets;
-
-    int select_ret = select(FD_SETSIZE, &ready_sockets, NULL, NULL, NULL) == -1;
-
-    if (select_ret == -1) {
-      _cleanup();
-      throw std::runtime_error(
-          "an error occured at select (for accepting connections)");
-    }
-    for (int fd = 0; fd < FD_SETSIZE; ++fd) {
-      if (FD_ISSET(fd, &ready_sockets)) {
-        if (fd == _listenfd) {
-          // if _listenfd is ready, that means there is a
-          // incoming connection, so we add it to the fd set
-          int connfd = accept_connection();
-          FD_SET(connfd, &current_sockets);
-        } else {
-          // if it's not _listenfd, then it must be a client
-          // socket which is ready. This means we should read
-          // from the client socket, so we call `handle_connections`
-          // with the fd
-          handle_connections(fd);
-          FD_CLR(fd, &current_sockets);
-          close(fd);
-        }
-      }
-    }
+    int connfd = accept_connection();
+    auto t = std::thread(handle_connections_free, connfd, _routes,
+                         _notFoundResponse);
+    t.detach();
   }
   // clean up when SIGINT is called and _run becomes 0,
   // breaking the while loop
