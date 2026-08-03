@@ -140,7 +140,7 @@ Feel free to look through the header file for the full list of methods available
 - [x] Support http methods other than go (using separate route maps for each method)
 - [x] Support file hosting (for downloading)
 - [x] Provide verbose debugging information
-- [ ] Multithreading (maybe maybe not???)
+- [x] Multithreading (maybe maybe not???)
 - [ ] Support paramerized URLs
 
 ---
